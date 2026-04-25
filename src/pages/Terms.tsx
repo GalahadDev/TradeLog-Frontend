@@ -10,17 +10,17 @@ const Terms = () => {
   return (
     <div className="min-h-screen relative bg-background text-foreground overflow-hidden">
       <AnimatedBackground />
-      
+
       <div className="relative z-10 container mx-auto px-6 py-12 max-w-4xl">
-        <Button 
-          variant="ghost" 
-          onClick={() => navigate("/")} 
+        <Button
+          variant="ghost"
+          onClick={() => navigate("/")}
           className="mb-8 hover:bg-white/5 text-muted-foreground hover:text-foreground gap-2 pl-0"
         >
           <ArrowLeft className="w-4 h-4" /> Volver al Inicio
         </Button>
 
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           className="backdrop-blur-xl bg-card/80 border border-border/50 rounded-2xl p-8 md:p-12 shadow-2xl"

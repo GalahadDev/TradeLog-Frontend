@@ -2,7 +2,9 @@ import { useState, useEffect } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { Trade } from "@/types";
 import { tradeService } from "@/lib/api";
-import { uploadScreenshot } from "@/lib/storage";
+import { uploadScreenshot, deleteScreenshot } from "@/lib/storage";
+import { supabase } from "@/integrations/supabase/client";
+import { normalizeTradeDate } from "@/lib/utils";
 import { DatePicker } from "@/components/ui/date-picker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,15 +20,18 @@ interface TradeFormProps {
   onOpenChange: (open: boolean) => void;
   onSuccess: () => void;
   tradeToEdit?: Trade | null;
+  accountId: string;
+  signedUrlMap?: Record<string, string>;
 }
 
-// Tipo auxiliar para el formulario
 type TradeFormData = Omit<Trade, 'tags'> & { tags: string };
 
-export function TradeForm({ open, onOpenChange, onSuccess, tradeToEdit }: TradeFormProps) {
+export function TradeForm({ open, onOpenChange, onSuccess, tradeToEdit, accountId, signedUrlMap }: TradeFormProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [existingPaths, setExistingPaths] = useState<string[]>([]);
+  const [removedPaths, setRemovedPaths] = useState<string[]>([]);
+  const [newFiles, setNewFiles] = useState<File[]>([]);
+  const [newPreviews, setNewPreviews] = useState<string[]>([]);
 
   const { register, handleSubmit, setValue, reset, watch, control } = useForm<Partial<TradeFormData>>({
     defaultValues: {
@@ -45,36 +50,63 @@ export function TradeForm({ open, onOpenChange, onSuccess, tradeToEdit }: TradeF
         entry_date: tradeToEdit.entry_date ? tradeToEdit.entry_date.split('T')[0] : '',
         exit_date: tradeToEdit.exit_date ? tradeToEdit.exit_date.split('T')[0] : '',
       });
-      setPreviewUrl(tradeToEdit.screenshot_url || null);
+      setExistingPaths(tradeToEdit.screenshot_urls ?? []);
+      setRemovedPaths([]);
+      setNewFiles([]);
+      setNewPreviews([]);
     } else {
       reset({ direction: 'long', status: 'closed', size: 1, commission: 0 });
-      setPreviewUrl(null);
-      setSelectedFile(null);
+      setExistingPaths([]);
+      setRemovedPaths([]);
+      setNewFiles([]);
+      setNewPreviews([]);
     }
   }, [tradeToEdit, reset, open]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setSelectedFile(file);
-      setPreviewUrl(URL.createObjectURL(file));
-    }
+  useEffect(() => {
+    return () => {
+      newPreviews.forEach(url => URL.revokeObjectURL(url));
+    };
+  }, [newPreviews]);
+
+  const canAddMore = existingPaths.length + newFiles.length < 3;
+
+  const getExistingDisplayUrl = (path: string) =>
+    path.startsWith('https://') ? path : (signedUrlMap?.[path] ?? '');
+
+  const handleAddFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.[0] || !canAddMore) return;
+    const file = e.target.files[0];
+    setNewFiles(prev => [...prev, file]);
+    setNewPreviews(prev => [...prev, URL.createObjectURL(file)]);
+    e.target.value = '';
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const onSubmit = async (data: any) => {
+  const handleRemoveExisting = (index: number) => {
+    setRemovedPaths(prev => [...prev, existingPaths[index]]);
+    setExistingPaths(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleRemoveNew = (index: number) => {
+    URL.revokeObjectURL(newPreviews[index]);
+    setNewFiles(prev => prev.filter((_, i) => i !== index));
+    setNewPreviews(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const onSubmit = async (data: Partial<TradeFormData>) => {
     setIsSubmitting(true);
     try {
-      let screenshotUrl = data.screenshot_url;
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("No autenticado");
 
-      if (selectedFile) {
-        const url = await uploadScreenshot(selectedFile);
-        if (url) screenshotUrl = url;
-      }
+      const uploadedPaths = await Promise.all(
+        newFiles.map(f => uploadScreenshot(f, user.id))
+      );
+      const validNewPaths = uploadedPaths.filter((p): p is string => p !== null);
+      const screenshotUrls = [...existingPaths, ...validNewPaths];
 
-      // Convertir tags string
       const tagsArray = data.tags
-        ? data.tags.split(',').map((t: string) => t.trim()).filter((t: string) => t !== "")
+        ? data.tags.split(',').map(t => t.trim()).filter(t => t !== "")
         : [];
 
       const payload = {
@@ -85,29 +117,26 @@ export function TradeForm({ open, onOpenChange, onSuccess, tradeToEdit }: TradeF
         pnl: Number(data.pnl),
         commission: Number(data.commission),
         tags: tagsArray,
-        screenshot_url: screenshotUrl,
-        entry_date: data.entry_date
-          ? new Date(data.entry_date + 'T12:00:00').toISOString()
-          : new Date().toISOString(),
-
-        exit_date: data.exit_date
-          ? new Date(data.exit_date + 'T12:00:00').toISOString()
-          : null,
+        screenshot_urls: screenshotUrls,
+        entry_date: normalizeTradeDate(data.entry_date) ?? new Date().toISOString(),
+        exit_date: normalizeTradeDate(data.exit_date),
       };
 
       if (tradeToEdit) {
-        await tradeService.update(tradeToEdit.id, payload);
+        await tradeService.update(accountId, tradeToEdit.id, payload);
         toast.success("Trade actualizado");
       } else {
-        await tradeService.create(payload);
+        await tradeService.create(accountId, payload);
         toast.success("Trade registrado exitosamente");
       }
+
+      await Promise.all(removedPaths.map(p => deleteScreenshot(p)));
 
       onSuccess();
       onOpenChange(false);
     } catch (error) {
       console.error(error);
-      toast.error("Error al guardar el trade");
+      toast.error(error instanceof Error ? error.message : "Error al guardar el trade");
     } finally {
       setIsSubmitting(false);
     }
@@ -157,7 +186,6 @@ export function TradeForm({ open, onOpenChange, onSuccess, tradeToEdit }: TradeF
             </div>
           </div>
 
-          {/* Fila SIZE y COMMISSION */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Tamaño (Size)</Label>
@@ -180,7 +208,6 @@ export function TradeForm({ open, onOpenChange, onSuccess, tradeToEdit }: TradeF
             />
           </div>
 
-          {/* FECHAS */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Fecha Entrada</Label>
@@ -190,7 +217,7 @@ export function TradeForm({ open, onOpenChange, onSuccess, tradeToEdit }: TradeF
                 rules={{ required: true }}
                 render={({ field }) => (
                   <DatePicker
-                    date={field.value ? new Date(field.value) : undefined}
+                    date={field.value ? new Date(field.value + 'T12:00:00') : undefined}
                     setDate={(date) => field.onChange(date ? date.toISOString().split('T')[0] : '')}
                     className="bg-black/20 w-full"
                   />
@@ -204,7 +231,7 @@ export function TradeForm({ open, onOpenChange, onSuccess, tradeToEdit }: TradeF
                 name="exit_date"
                 render={({ field }) => (
                   <DatePicker
-                    date={field.value ? new Date(field.value) : undefined}
+                    date={field.value ? new Date(field.value + 'T12:00:00') : undefined}
                     setDate={(date) => field.onChange(date ? date.toISOString().split('T')[0] : '')}
                     className="bg-black/20 w-full"
                   />
@@ -213,45 +240,69 @@ export function TradeForm({ open, onOpenChange, onSuccess, tradeToEdit }: TradeF
             </div>
           </div>
 
-          {/* TAGS */}
           <div className="space-y-2">
             <Label>Etiquetas (Separadas por comas)</Label>
             <Input {...register("tags")} placeholder="scalping, fvg, news" className="bg-black/20" />
           </div>
 
-          {/* FOTO */}
           <div className="space-y-2">
-            <Label>Screenshot</Label>
-            <div className="border-2 border-dashed border-border rounded-lg p-4 text-center hover:bg-white/5 transition-colors cursor-pointer relative">
-              <Input
-                type="file"
-                accept="image/*"
-                className="absolute inset-0 opacity-0 cursor-pointer"
-                onChange={handleFileChange}
-              />
-              {previewUrl ? (
-                <div className="relative">
-                  <img src={previewUrl} alt="Preview" className="max-h-40 mx-auto rounded-md" />
+            <Label>
+              Screenshots{" "}
+              <span className="text-muted-foreground text-xs">
+                ({existingPaths.length + newFiles.length}/3)
+              </span>
+            </Label>
+
+            <div className="flex flex-wrap gap-3">
+              {existingPaths.map((path, i) => (
+                <div key={path} className="relative w-24 h-24">
+                  <img
+                    src={getExistingDisplayUrl(path)}
+                    alt={`Screenshot ${i + 1}`}
+                    className="w-full h-full object-cover rounded-md border border-border"
+                  />
                   <Button
                     type="button"
                     variant="destructive"
                     size="icon"
-                    className="absolute -top-2 -right-2 h-6 w-6 rounded-full"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      setPreviewUrl(null);
-                      setSelectedFile(null);
-                      setValue('screenshot_url', '');
-                    }}
+                    className="absolute -top-2 -right-2 h-5 w-5 rounded-full"
+                    onClick={() => handleRemoveExisting(i)}
                   >
                     <X className="w-3 h-3" />
                   </Button>
                 </div>
-              ) : (
-                <div className="flex flex-col items-center gap-2 text-muted-foreground">
-                  <Upload className="w-8 h-8" />
-                  <span className="text-xs">Click para subir imagen</span>
+              ))}
+
+              {newPreviews.map((preview, i) => (
+                <div key={preview} className="relative w-24 h-24">
+                  <img
+                    src={preview}
+                    alt={`Nueva ${i + 1}`}
+                    className="w-full h-full object-cover rounded-md border border-primary/50"
+                  />
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="icon"
+                    className="absolute -top-2 -right-2 h-5 w-5 rounded-full"
+                    onClick={() => handleRemoveNew(i)}
+                  >
+                    <X className="w-3 h-3" />
+                  </Button>
                 </div>
+              ))}
+
+              {canAddMore && (
+                <label className="relative w-24 h-24 border-2 border-dashed border-border rounded-md flex flex-col items-center justify-center cursor-pointer hover:bg-white/5 transition-colors">
+                  <Upload className="w-5 h-5 text-muted-foreground mb-1" />
+                  <span className="text-xs text-muted-foreground">Agregar</span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="absolute inset-0 opacity-0 cursor-pointer"
+                    onChange={handleAddFile}
+                  />
+                </label>
               )}
             </div>
           </div>
