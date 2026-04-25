@@ -1,39 +1,38 @@
+import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { 
+import {
   LineChart, Plus, LayoutDashboard, Wallet, ArrowRight
 } from "lucide-react";
 import TradingCalendar from "@/components/dashboard/TradingCalendar";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
-import { toast } from "sonner";
 
 const Dashboard = () => {
   const navigate = useNavigate();
 
-  const menuItems = [
-    { 
-      icon: Plus, 
-      label: "Nuevo Trade", 
+  const menuItems = useMemo(() => [
+    {
+      icon: Plus,
+      label: "Nuevo Trade",
       color: "text-profit",
       bg: "bg-profit/10 border-profit/20",
-      action: () => navigate("/journal") 
+      action: () => navigate("/journal")
     },
-    { 
-      icon: LineChart, 
-      label: "Estadísticas", 
-      color: "text-chart-line", 
+    {
+      icon: LineChart,
+      label: "Estadísticas",
+      color: "text-chart-line",
       bg: "bg-chart-line/10 border-chart-line/20",
-      action: () => navigate("/stats") 
+      action: () => navigate("/stats")
     },
-    { 
-      icon: Wallet, 
-      label: "Agregar Cuenta", 
-      sub: "Próximamente",
-      color: "text-muted-foreground", 
-      bg: "bg-secondary/50 border-white/5",
-      action: () => toast.info("Esta funcionalidad estará disponible pronto.") 
+    {
+      icon: Wallet,
+      label: "Mis Cuentas",
+      color: "text-gold",
+      bg: "bg-gold/10 border-gold/20",
+      action: () => navigate("/accounts")
     },
-  ];
+  ], [navigate]);
 
   return (
     <DashboardLayout>
@@ -75,20 +74,13 @@ const Dashboard = () => {
                   <div className={`p-2 rounded-lg bg-background/40 ${item.color}`}>
                     <item.icon className="w-6 h-6" />
                   </div>
-                  {item.label !== "Agregar Cuenta" && (
-                    <ArrowRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-                  )}
+                  <ArrowRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
                 </div>
                 
                 <div>
-                  <span className={`font-bold text-lg ${item.color === "text-muted-foreground" ? "text-muted-foreground" : "text-foreground"}`}>
+                  <span className="font-bold text-lg text-foreground">
                     {item.label}
                   </span>
-                  {item.sub && (
-                    <span className="block text-xs text-primary mt-1 font-mono uppercase tracking-wider">
-                      {item.sub}
-                    </span>
-                  )}
                 </div>
               </motion.button>
             ))}

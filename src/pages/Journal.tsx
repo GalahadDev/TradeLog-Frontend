@@ -1,5 +1,7 @@
-import { useEffect, useState, useMemo } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { tradeService } from "@/lib/api";
+import { resolveUrls, deleteScreenshot } from "@/lib/storage";
 import { Trade } from "@/types";
 import { DatePicker } from "@/components/ui/date-picker";
 import { Button } from "@/components/ui/button";
@@ -8,74 +10,63 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   Plus, Loader2, ArrowUpRight, ArrowDownRight, Trash2, Pencil,
-  Image as ImageIcon, X, Search, Filter, ArrowLeft, BookOpen
+  Image as ImageIcon, X, Search, Filter, ArrowLeft, BookOpen, Wallet
 } from "lucide-react";
 import { toast } from "sonner";
-import { format, isWithinInterval, parseISO, startOfDay, endOfDay } from "date-fns";
-import { es } from "date-fns/locale";
+import { isWithinInterval, parseISO, startOfDay, endOfDay } from "date-fns";
 import { TradeForm } from "@/components/trades/TradeForm";
-// import { Dialog, DialogContent } from "@/components/ui/dialog"; // Removed simple dialog
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { TradeGalleryModal } from "@/components/journal/TradeGalleryModal";
 import { useNavigate } from "react-router-dom";
-
-// Helper para fechas
-const safeDate = (dateString: string | undefined | null) => {
-  if (!dateString) return "-";
-  try {
-    const datePart = dateString.split('T')[0];
-    const [year, month, day] = datePart.split('-').map(Number);
-    // Note: Month in Date constructor is 0-indexed
-    const localDate = new Date(year, month - 1, day);
-    return format(localDate, "dd MMM", { locale: es });
-  } catch (error) {
-    return "-";
-  }
-};
+import { safeDate, getPnLColorClass } from "@/lib/utils";
+import { useAccount } from "@/contexts/AccountContext";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const Journal = () => {
   const navigate = useNavigate();
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+  const { selectedAccount } = useAccount();
+  const accountId = selectedAccount?.id;
 
-  // Estados para el Formulario y Modal
+  const { data: rawTrades = [], isLoading, refetch } = useQuery<Trade[]>({
+    queryKey: ["trades", accountId],
+    queryFn: async () => {
+      if (!accountId) return [];
+      const response = await tradeService.getAll(accountId, 1, 100);
+      const d = response.data as { data?: Trade[]; trades?: Trade[] };
+      return d.data || d.trades || [];
+    },
+    enabled: !!accountId,
+  });
+
+  const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const allPaths = rawTrades.flatMap(t => t.screenshot_urls ?? []);
+    if (allPaths.length === 0) { setSignedUrls({}); return; }
+    resolveUrls(allPaths).then(setSignedUrls);
+  }, [rawTrades]);
+
+  const getDisplayUrl = useCallback(
+    (path: string) => signedUrls[path] ?? path,
+    [signedUrls]
+  );
+
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
-  // Gallery State
   const [galleryTradeId, setGalleryTradeId] = useState<string | null>(null);
 
-  // --- ESTADOS DE FILTROS ---
   const [searchTerm, setSearchTerm] = useState("");
   const [filterDirection, setFilterDirection] = useState<string>("all");
   const [filterStatus, setFilterStatus] = useState<string>("all");
-
   const [dateFrom, setDateFrom] = useState<Date | undefined>(undefined);
   const [dateTo, setDateTo] = useState<Date | undefined>(undefined);
 
-  const loadTrades = async () => {
-    setLoading(true);
-    try {
-      const response = await tradeService.getAll(1, 100);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const responseData = response.data as any;
-      const listaTrades = responseData.data || responseData.trades || [];
-      setTrades(listaTrades);
-    } catch (error) {
-      console.error("Error cargando trades:", error);
-      toast.error("Error al cargar el historial");
-      setTrades([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadTrades();
-  }, []);
-
-  // --- LÓGICA DE FILTRADO ---
   const filteredTrades = useMemo(() => {
-    return trades.filter((trade) => {
+    return rawTrades.filter((trade) => {
       const searchLower = searchTerm.toLowerCase();
       const matchesSearch =
         trade.symbol.toLowerCase().includes(searchLower) ||
@@ -102,31 +93,78 @@ const Journal = () => {
 
       return matchesSearch && matchesDirection && matchesStatus && matchesDate;
     });
-  }, [trades, searchTerm, filterDirection, filterStatus, dateFrom, dateTo]);
+  }, [rawTrades, searchTerm, filterDirection, filterStatus, dateFrom, dateTo]);
 
-  const filteredPnL = filteredTrades.reduce((acc, t) => acc + Number(t.pnl), 0);
+  const displayFilteredTrades = useMemo(
+    () => filteredTrades.map(t => ({
+      ...t,
+      screenshot_urls: t.screenshot_urls?.map(getDisplayUrl),
+    })),
+    [filteredTrades, getDisplayUrl]
+  );
 
-  // Handlers CRUD
-  const handleAddNew = () => { setSelectedTrade(null); setIsSheetOpen(true); };
-  const handleEdit = (trade: Trade) => { setSelectedTrade(trade); setIsSheetOpen(true); };
-  const handleDelete = async (id: string) => {
-    if (!confirm("¿Borrar este trade permanentemente?")) return;
+  const filteredPnL = useMemo(
+    () => filteredTrades.reduce((acc, t) => acc + Number(t.pnl), 0),
+    [filteredTrades]
+  );
+
+  const handleAddNew = useCallback(() => { setSelectedTrade(null); setIsSheetOpen(true); }, []);
+  const handleEdit = useCallback((trade: Trade) => { setSelectedTrade(trade); setIsSheetOpen(true); }, []);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  const handleDelete = useCallback((id: string) => { setDeleteId(id); }, []);
+
+  const confirmDelete = useCallback(async () => {
+    if (!deleteId || !accountId) return;
+    const trade = rawTrades.find(t => t.id === deleteId);
     try {
-      await tradeService.delete(id);
-      setTrades(prev => prev.filter(t => t.id !== id));
+      await tradeService.delete(accountId, deleteId);
+      queryClient.setQueryData<Trade[]>(
+        ["trades", accountId],
+        prev => prev?.filter(t => t.id !== deleteId) ?? []
+      );
+      queryClient.invalidateQueries({ queryKey: ["calendar-metrics", accountId] });
+      if (trade?.screenshot_urls) {
+        await Promise.all(trade.screenshot_urls.map(p => deleteScreenshot(p)));
+      }
       toast.success("Trade eliminado");
-    } catch (error) { toast.error("Error al eliminar"); }
-  };
+    } catch {
+      toast.error("Error al eliminar");
+    } finally {
+      setDeleteId(null);
+    }
+  }, [deleteId, accountId, queryClient, rawTrades]);
 
-  const clearFilters = () => {
+  const clearFilters = useCallback(() => {
     setSearchTerm("");
-    setFilterDirection("all");
-    setFilterStatus("all");
     setFilterDirection("all");
     setFilterStatus("all");
     setDateFrom(undefined);
     setDateTo(undefined);
-  };
+  }, []);
+
+  const hasActiveFilters = searchTerm || filterStatus !== 'all' || filterDirection !== 'all' || dateFrom || dateTo;
+
+  if (!accountId) {
+    return (
+      <DashboardLayout>
+        <div className="min-h-screen relative p-6 flex items-center justify-center">
+          <div className="text-center space-y-4">
+            <div className="p-4 rounded-full bg-card/40 border border-border/50 inline-block">
+              <Wallet className="w-12 h-12 text-muted-foreground/40" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-foreground mb-2">Sin cuenta seleccionada</h2>
+              <p className="text-muted-foreground text-sm mb-4">Selecciona una cuenta desde el menú superior o crea una nueva.</p>
+              <Button onClick={() => navigate("/accounts")} className="bg-primary text-primary-foreground hover:bg-primary/90">
+                <Wallet className="mr-2 h-4 w-4" /> Gestionar Cuentas
+              </Button>
+            </div>
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
 
   return (
     <DashboardLayout>
@@ -135,16 +173,35 @@ const Journal = () => {
         <TradeForm
           open={isSheetOpen}
           onOpenChange={setIsSheetOpen}
-          onSuccess={loadTrades}
+          onSuccess={refetch}
           tradeToEdit={selectedTrade}
+          accountId={accountId}
+          signedUrlMap={signedUrls}
         />
 
         <TradeGalleryModal
           isOpen={!!galleryTradeId}
           onClose={() => setGalleryTradeId(null)}
-          trades={filteredTrades}
+          trades={displayFilteredTrades}
           initialTradeId={galleryTradeId}
         />
+
+        <AlertDialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>¿Borrar este trade?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Esta acción es permanente y no se puede deshacer.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+              <AlertDialogAction onClick={confirmDelete} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">
+                Eliminar
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         <div className="max-w-7xl mx-auto relative z-10 space-y-6">
 
@@ -156,14 +213,11 @@ const Journal = () => {
             <ArrowLeft className="w-4 h-4" /> Volver al Inicio
           </Button>
 
-          {/* Header Superior */}
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
             <div className="flex items-center gap-4">
-              {/* --- ICONO DECORATIVO --- */}
               <div className="p-3 rounded-xl bg-gradient-to-br from-blue-500/20 to-purple-500/20 border border-blue-500/30 shadow-lg shadow-blue-500/10 hidden sm:block">
                 <BookOpen className="w-8 h-8 text-blue-400" />
               </div>
-
               <div>
                 <h1 className="text-3xl font-bold font-display text-foreground">Trading Journal</h1>
                 <div className="flex items-center gap-3 mt-1">
@@ -180,7 +234,6 @@ const Journal = () => {
             </Button>
           </div>
 
-          {/* --- BARRA DE FILTROS --- */}
           <div className="bg-card/40 border border-border/50 p-4 rounded-xl backdrop-blur-sm grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 shadow-sm">
             <div className="relative col-span-1 lg:col-span-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -218,23 +271,13 @@ const Journal = () => {
             <div className="flex gap-2 col-span-1 lg:col-span-2">
               <div className="relative flex-1">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/50 text-[10px] uppercase">De</span>
-                <DatePicker
-                  date={dateFrom}
-                  setDate={setDateFrom}
-                  placeholder="Inicio"
-                  className="pl-8 text-xs h-10"
-                />
+                <DatePicker date={dateFrom} setDate={setDateFrom} placeholder="Inicio" className="pl-8 text-xs h-10" />
               </div>
               <div className="relative flex-1">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/50 text-[10px] uppercase z-10">A</span>
-                <DatePicker
-                  date={dateTo}
-                  setDate={setDateTo}
-                  placeholder="Fin"
-                  className="pl-8 text-xs h-10"
-                />
+                <DatePicker date={dateTo} setDate={setDateTo} placeholder="Fin" className="pl-8 text-xs h-10" />
               </div>
-              {(searchTerm || filterStatus !== 'all' || filterDirection !== 'all' || dateFrom || dateTo) && (
+              {hasActiveFilters && (
                 <Button variant="ghost" size="icon" onClick={clearFilters} className="text-muted-foreground hover:text-white" title="Limpiar filtros">
                   <X className="w-4 h-4" />
                 </Button>
@@ -242,9 +285,8 @@ const Journal = () => {
             </div>
           </div>
 
-          {/* Tabla de Datos */}
           <div className="backdrop-blur-xl bg-card/80 border border-border/50 rounded-xl overflow-hidden shadow-2xl">
-            {loading ? (
+            {isLoading ? (
               <div className="p-12 flex justify-center"><Loader2 className="animate-spin w-8 h-8 text-primary" /></div>
             ) : !filteredTrades || filteredTrades.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground flex flex-col items-center gap-2">
@@ -309,13 +351,13 @@ const Journal = () => {
                         </TableCell>
 
                         <TableCell>
-                          <span className={`font-bold font-mono ${Number(trade?.pnl) >= 0 ? 'text-profit' : 'text-loss'}`}>
+                          <span className={`font-bold font-mono ${getPnLColorClass(Number(trade?.pnl))}`}>
                             {Number(trade?.pnl) >= 0 ? "+" : ""}{Number(trade?.pnl || 0).toFixed(2)}
                           </span>
                         </TableCell>
 
                         <TableCell className="text-center">
-                          {trade?.screenshot_url ? (
+                          {(trade?.screenshot_urls?.length ?? 0) > 0 ? (
                             <Button
                               variant="ghost"
                               size="icon"

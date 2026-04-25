@@ -1,26 +1,28 @@
 import axios from 'axios';
 import { supabase } from '@/integrations/supabase/client';
-import { User, Trade, CalendarMetric, TradingStats } from '@/types'; 
+import { User, Trade, CalendarMetric, TradingStats, AccountListItem, TradingAccount, AccountSummary } from '@/types';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL,
 });
 
-// 1. INYECTAR TOKEN
-api.interceptors.request.use(async (config) => {
-  const { data } = await supabase.auth.getSession();
-  if (data.session?.access_token) {
-    config.headers.Authorization = `Bearer ${data.session.access_token}`;
+let cachedToken: string | null = null;
+supabase.auth.onAuthStateChange((_, session) => {
+  cachedToken = session?.access_token ?? null;
+});
+
+api.interceptors.request.use((config) => {
+  if (cachedToken) {
+    config.headers.Authorization = `Bearer ${cachedToken}`;
   }
   return config;
 });
 
-// 2. INTERCEPTOR DE ERRORES
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 403 && error.response?.data?.error === 'ACCOUNT_PENDING') {
-      window.location.href = '/pending'; 
+      window.location.href = '/pending';
     }
     return Promise.reject(error);
   }
@@ -36,47 +38,70 @@ export const userService = {
 };
 
 export const adminService = {
-  getAllUsers: () => api.get<{ users: User[] }>('/admin/users'),
+  getAllUsers: (page = 1, limit = 20) =>
+    api.get<{ data: User[]; meta: { total: number; page: number; limit: number } }>(
+      `/admin/users?page=${page}&limit=${limit}`
+    ),
   getUser: (id: string) => api.get<{ user: User }>(`/admin/users/${id}`),
   updateUser: (id: string, data: Partial<User>) => api.put(`/admin/users/${id}`, data),
   deleteUser: (id: string) => api.delete(`/admin/users/${id}`),
 };
 
-//  Servicio de Trades (CRUD)
-export const tradeService = {
-  // Listar con paginación
-  getAll: (page = 1, limit = 10) => 
-    api.get<{ data: Trade[], meta: { total: number, page: number, limit: number } }>(`/trades?page=${page}&limit=${limit}`),
-  
-  // Obtener uno por ID
-  getById: (id: string) => 
-    api.get<{ trade: Trade }>(`/trades/${id}`),
-  
-  // Crear
-  create: (data: Partial<Trade>) => 
-    api.post('/trades', data),
-  
-  // Actualizar
-  update: (id: string, data: Partial<Trade>) => 
-    api.patch(`/trades/${id}`, data),
-  
-  // Borrar
-  delete: (id: string) => 
-    api.delete(`/trades/${id}`),
+export const accountService = {
+  getAll: () =>
+    api.get<{ accounts: AccountListItem[] }>('/accounts'),
+
+  getById: (id: string) =>
+    api.get<{ account: TradingAccount; summary: AccountSummary }>(`/accounts/${id}`),
+
+  create: (data: {
+    name: string;
+    broker: string;
+    account_type: string;
+    initial_balance: number;
+    profit_target?: number;
+    max_drawdown_limit?: number;
+    currency?: string;
+  }) => api.post<{ account: TradingAccount }>('/accounts', data),
+
+  update: (id: string, data: {
+    name?: string;
+    broker?: string;
+    status?: string;
+    profit_target?: number;
+    max_drawdown_limit?: number;
+  }) => api.patch<{ account: TradingAccount }>(`/accounts/${id}`, data),
+
+  delete: (id: string) => api.delete(`/accounts/${id}`),
 };
 
-// Analytics y Dashboard
+export const tradeService = {
+  getAll: (accountId: string, page = 1, limit = 10) =>
+    api.get<{ data: Trade[]; meta: { total: number; page: number; limit: number } }>(
+      `/accounts/${accountId}/trades?page=${page}&limit=${limit}`
+    ),
+
+  getById: (accountId: string, tradeId: string) =>
+    api.get<{ trade: Trade }>(`/accounts/${accountId}/trades/${tradeId}`),
+
+  create: (accountId: string, data: Partial<Trade>) =>
+    api.post(`/accounts/${accountId}/trades`, data),
+
+  update: (accountId: string, tradeId: string, data: Partial<Trade>) =>
+    api.patch(`/accounts/${accountId}/trades/${tradeId}`, data),
+
+  delete: (accountId: string, tradeId: string) =>
+    api.delete(`/accounts/${accountId}/trades/${tradeId}`),
+};
 
 export const dashboardService = {
-  getCalendarMetrics: (startDate?: string, endDate?: string) => 
-    api.get<{ data: CalendarMetric[] }>('/dashboard/calendar', { 
-      params: { start_date: startDate, end_date: endDate } 
+  getCalendarMetrics: (accountId: string, startDate?: string, endDate?: string) =>
+    api.get<{ data: CalendarMetric[] }>(`/accounts/${accountId}/dashboard/calendar`, {
+      params: { start_date: startDate, end_date: endDate },
     }),
 
-  //  Endpoint de Estadísticas Avanzadas
-  getStats: (startDate?: string, endDate?: string) =>
-    api.get<{ stats: TradingStats }>('/dashboard/stats', {
-      params: { start_date: startDate, end_date: endDate }
+  getStats: (accountId: string, startDate?: string, endDate?: string) =>
+    api.get<{ stats: TradingStats }>(`/accounts/${accountId}/dashboard/stats`, {
+      params: { start_date: startDate, end_date: endDate },
     }),
 };
-

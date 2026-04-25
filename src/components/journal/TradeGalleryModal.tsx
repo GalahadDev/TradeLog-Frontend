@@ -1,11 +1,11 @@
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Trade } from "@/types";
 import { Button } from "@/components/ui/button";
 import {
     ChevronLeft, ChevronRight, X, Calendar,
-    TrendingUp, TrendingDown, DollarSign, Tag, Maximize2
+    TrendingUp, TrendingDown, Tag
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
@@ -18,34 +18,48 @@ interface TradeGalleryModalProps {
     initialTradeId: string | null;
 }
 
+type FlatItem = {
+    trade: Trade;
+    photoUrl: string;
+    photoIndex: number;
+    totalPhotos: number;
+};
+
 export const TradeGalleryModal = ({
     isOpen,
     onClose,
     trades,
     initialTradeId
 }: TradeGalleryModalProps) => {
-    const [currentIndex, setCurrentIndex] = useState(0);
+    const [currentFlatIndex, setCurrentFlatIndex] = useState(0);
 
-    // Sincronizar el índice cuando se abre el modal con un ID específico
+    const flatItems = useMemo<FlatItem[]>(() =>
+        trades.flatMap(trade => {
+            const urls = (trade.screenshot_urls ?? []).filter(Boolean);
+            return urls.map((photoUrl, photoIndex) => ({
+                trade,
+                photoUrl,
+                photoIndex,
+                totalPhotos: urls.length,
+            }));
+        }),
+    [trades]);
+
     useEffect(() => {
         if (isOpen && initialTradeId) {
-            const index = trades.findIndex(t => t.id === initialTradeId);
-            if (index !== -1) setCurrentIndex(index);
+            const idx = flatItems.findIndex(item => item.trade.id === initialTradeId);
+            if (idx !== -1) setCurrentFlatIndex(idx);
         }
-    }, [isOpen, initialTradeId, trades]);
+    }, [isOpen, initialTradeId, flatItems]);
 
-    const currentTrade = trades[currentIndex] || null;
-
-    // Navegación
     const handleNext = useCallback(() => {
-        setCurrentIndex((prev) => (prev + 1) % trades.length);
-    }, [trades.length]);
+        setCurrentFlatIndex(prev => (prev + 1) % flatItems.length);
+    }, [flatItems.length]);
 
     const handlePrev = useCallback(() => {
-        setCurrentIndex((prev) => (prev - 1 + trades.length) % trades.length);
-    }, [trades.length]);
+        setCurrentFlatIndex(prev => (prev - 1 + flatItems.length) % flatItems.length);
+    }, [flatItems.length]);
 
-    // Teclado
     useEffect(() => {
         if (!isOpen) return;
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -57,8 +71,10 @@ export const TradeGalleryModal = ({
         return () => window.removeEventListener("keydown", handleKeyDown);
     }, [isOpen, handleNext, handlePrev, onClose]);
 
-    if (!currentTrade) return null;
+    if (!flatItems.length) return null;
 
+    const currentItem = flatItems[currentFlatIndex] ?? flatItems[0];
+    const currentTrade = currentItem.trade;
     const isWin = Number(currentTrade.pnl) >= 0;
 
     return (
@@ -70,8 +86,8 @@ export const TradeGalleryModal = ({
 
                     <AnimatePresence mode="wait">
                         <motion.img
-                            key={currentTrade.id}
-                            src={currentTrade.screenshot_url || "https://placehold.co/1920x1080/1a1a1a/FFF?text=No+Screenshot"}
+                            key={`${currentTrade.id}-${currentItem.photoIndex}`}
+                            src={currentItem.photoUrl || "https://placehold.co/1920x1080/1a1a1a/FFF?text=No+Screenshot"}
                             alt="Trade Screenshot"
                             className="max-h-full max-w-full object-contain rounded-md shadow-2xl"
                             initial={{ opacity: 0, scale: 0.95 }}
@@ -81,7 +97,6 @@ export const TradeGalleryModal = ({
                         />
                     </AnimatePresence>
 
-                    {/* Botones de Navegación Flotantes */}
                     <Button
                         variant="ghost"
                         size="icon"
@@ -100,7 +115,6 @@ export const TradeGalleryModal = ({
                         <ChevronRight className="h-6 w-6" />
                     </Button>
 
-                    {/* Close Button Mobile (Absolute) */}
                     <Button
                         variant="ghost"
                         size="icon"
@@ -114,7 +128,6 @@ export const TradeGalleryModal = ({
                 {/* --- COLUMNA DERECHA: INFO --- */}
                 <div className="w-full md:w-[400px] border-l border-white/10 bg-card p-6 flex flex-col h-full overflow-y-auto relative">
 
-                    {/* Header */}
                     <div className="flex justify-between items-start mb-6">
                         <div>
                             <h2 className="text-2xl font-bold font-display tracking-tight flex items-center gap-2">
@@ -137,7 +150,6 @@ export const TradeGalleryModal = ({
                         </Button>
                     </div>
 
-                    {/* PnL Card */}
                     <div className={`p-6 rounded-2xl mb-6 shadow-glow-sm relative overflow-hidden ${isWin
                         ? 'bg-gradient-to-br from-profit/20 to-transparent border border-profit/20'
                         : 'bg-gradient-to-br from-loss/20 to-transparent border border-loss/20'
@@ -148,14 +160,11 @@ export const TradeGalleryModal = ({
                                 {Number(currentTrade.pnl) >= 0 ? "+" : ""}{Number(currentTrade.pnl).toFixed(2)}
                             </div>
                         </div>
-
-                        {/* Icono de fondo decorativo */}
                         <div className="absolute right-0 bottom-0 opacity-10 transform translate-x-1/4 translate-y-1/4">
                             {isWin ? <TrendingUp className="w-24 h-24" /> : <TrendingDown className="w-24 h-24" />}
                         </div>
                     </div>
 
-                    {/* Stats Grid */}
                     <div className="grid grid-cols-2 gap-4 mb-6">
                         <div className="p-4 rounded-xl bg-secondary/30 border border-white/5">
                             <span className="text-xs text-muted-foreground uppercase">Entry Price</span>
@@ -177,7 +186,6 @@ export const TradeGalleryModal = ({
                         </div>
                     </div>
 
-                    {/* Tags */}
                     {currentTrade.tags && currentTrade.tags.length > 0 && (
                         <div className="mb-6">
                             <span className="text-sm font-medium text-muted-foreground mb-3 block flex items-center gap-2">
@@ -193,19 +201,23 @@ export const TradeGalleryModal = ({
                         </div>
                     )}
 
-                    {/* Notes */}
                     {currentTrade.notes && (
                         <div className="flex-1 min-h-[100px] p-4 rounded-xl bg-secondary/20 border border-white/5 text-sm leading-relaxed text-gray-300 overflow-y-auto">
                             <p className="whitespace-pre-wrap font-sans">{currentTrade.notes}</p>
                         </div>
                     )}
 
-                    {/* Footer - Paginación Info */}
                     <div className="mt-auto pt-6 flex justify-between items-center text-xs text-muted-foreground font-mono uppercase">
                         <span>Trade ID: <span className="text-gray-500">{currentTrade.id.slice(0, 8)}</span></span>
-                        <span>{currentIndex + 1} de {trades.length}</span>
+                        <div className="flex flex-col items-end gap-1">
+                            {currentItem.totalPhotos > 1 && (
+                                <span className="text-primary/70">
+                                    Foto {currentItem.photoIndex + 1}/{currentItem.totalPhotos}
+                                </span>
+                            )}
+                            <span>{currentFlatIndex + 1} de {flatItems.length}</span>
+                        </div>
                     </div>
-
                 </div>
             </DialogContent>
         </Dialog>

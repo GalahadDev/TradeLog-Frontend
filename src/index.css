@@ -4,8 +4,6 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Trading Journal Design System - Dark Professional Theme */
-
 @layer base {
   :root {
     --background: 222 47% 6%;
@@ -112,7 +110,12 @@
     font-family: 'Inter', sans-serif;
   }
 
-  h1, h2, h3, h4, h5, h6 {
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
     font-family: 'Space Grotesk', sans-serif;
   }
 }
@@ -129,7 +132,7 @@
   }
 
   .bg-grid-pattern {
-    background-image: 
+    background-image:
       linear-gradient(hsl(217 33% 15% / 0.3) 1px, transparent 1px),
       linear-gradient(90deg, hsl(217 33% 15% / 0.3) 1px, transparent 1px);
     background-size: 60px 60px;
@@ -158,19 +161,25 @@
 }
 
 @keyframes float {
-  0%, 100% {
+
+  0%,
+  100% {
     transform: translateY(0px) rotate(0deg);
   }
+
   50% {
     transform: translateY(-20px) rotate(2deg);
   }
 }
 
 @keyframes pulse-glow {
-  0%, 100% {
+
+  0%,
+  100% {
     opacity: 0.4;
     transform: scale(1);
   }
+
   50% {
     opacity: 0.8;
     transform: scale(1.05);
